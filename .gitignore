@@ -1,0 +1,7 @@
+# This matches .terraform inside ANY subfolder (like terraform/bootstarp/)
+**/.terraform/
+**/.terraform.lock.hcl
+
+# This matches state files inside ANY subfolder
+**/*.tfstate
+**/*.tfstate.backup
