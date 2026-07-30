@@ -45,3 +45,28 @@ variable "aws_private_subnet_cidrs_az" {
     }
   }
 }
+
+variable "allowed_ports" {
+  default = {
+    ssh = 22,
+    http = 80,
+    https = 443
+  }
+}
+
+# launch template
+
+variable "name_prefix" {
+  type = string
+  default = "multi-az-lt-"
+}
+
+variable "ami_id" {
+  type = string
+  default = "ami-0b6d9d3d33ba97d99"
+}
+
+variable "instance_type" {
+  type = string
+  default = "t3.small"
+}
