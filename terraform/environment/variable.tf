@@ -70,3 +70,47 @@ variable "instance_type" {
   type = string
   default = "t3.small"
 }
+
+# RDS ----------------------------------------------------------------------
+
+variable "storage" {
+  default = 30
+}
+
+variable "storage_type" {
+  default = "gp2"
+}
+
+variable "instance_class" {
+  default = "db.t3.micro"
+}
+
+variable "engine" {
+  default = "mysql"
+}
+
+variable "engine_version" {
+  default = "8.4.8"
+}
+
+variable "username" {
+  default = "admin"
+}
+
+
+variable "password" {
+  default = "Sandip1234"
+}
+
+variable "database_name" {
+  default = "karfect"
+}
+
+variable "public_access" {
+  default = false
+}
+
+variable "skip_final_snapshot" {
+  default = true
+}
+

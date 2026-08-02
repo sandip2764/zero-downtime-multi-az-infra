@@ -1,4 +1,4 @@
-# key_pair
+# # key_pair
 resource "aws_key_pair" "this_key_pair" {
   key_name = "terra_key_ec2"
   public_key = file("terra_key_ec2.pub")
@@ -26,7 +26,7 @@ module "lb_security_group" {
 
   vpc_id = module.networking.vpc_id
 
-  ingress_source_ip = "10.0.0.0/16"
+  ingress_source_ip = "0.0.0.0/0"
 
   allowed_ports = var.allowed_ports
 
@@ -41,7 +41,7 @@ module "launch_template" {
   ami_id = var.ami_id
   instance_type = var.instance_type
   key_name = aws_key_pair.this_key_pair.key_name
-  lt_security_group = [ module.lb_security_group.alb_security_group_id ]
+  lt_security_group = [ module.lb_security_group.aws_security_group_id ]
 
 }
 
@@ -52,7 +52,7 @@ module "load-balancer" {
 
   project_name = "${var.project_name}-lb"
 
-  security_group_ids = [ module.lb_security_group.alb_security_group_id ]
+  security_group_ids = [ module.lb_security_group.aws_security_group_id ]
 
   subnets = values( module.networking.aws_public_subnet_ids )
 
@@ -133,5 +133,83 @@ module "asg" {
 
   tags = {
     Name = "${var.project_name}-asg"
+  }
+}
+
+# rds security group 
+
+module "db_security_group" {
+  source = "../module/security/"
+
+  name_prefix = "rds_sg-"
+
+  description = "for db instance!"
+
+  vpc_id = module.networking.vpc_id
+
+  ingress_source_ip = "10.0.0.0/16"
+  allowed_ports = var.allowed_ports
+
+}
+
+# rds 
+
+module "rds" {
+  source = "../module/database/"
+
+  subnet_ids = values(module.networking.aws_private_subnet_ids)
+
+  identifier = "${var.project_name}-db"
+  instance_class = var.instance_class
+
+  storage = var.storage
+  storage_type = var.storage_type
+
+  username = var.username
+  password = var.password
+
+  publicly_accessible = var.public_access
+
+  engine = var.engine
+  engine_version = var.engine_version
+
+  security_group = [ module.db_security_group.aws_security_group_id ]
+
+  skip_final_snapshot = var.skip_final_snapshot
+}
+
+# secret manager for db instance 
+
+resource "aws_secretsmanager_secret" "db" {
+  name = "db_secret_manager"
+}
+
+resource "aws_secretsmanager_secret_version" "db" {
+  
+  secret_id = aws_secretsmanager_secret.db.id
+
+  secret_string = jsonencode({
+    host     = module.rds.host
+    username = module.rds.username
+    password = module.rds.password
+    database = var.database_name
+    port     = module.rds.port
+  })
+
+
+}
+
+# ECR
+
+resource "aws_ecr_repository" "app_repo" {
+  name                 = "${var.project_name}"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    Name        = "${var.project_name}-ecr"
   }
 }

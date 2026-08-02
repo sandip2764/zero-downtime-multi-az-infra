@@ -23,7 +23,7 @@ output "nat_gateway_id" {
 # sg-group
 
 output "aws_security_group" {
-  value = module.lb_security_group.alb_security_group_id
+  value = module.lb_security_group.aws_security_group_id
 }
 
 # lt
@@ -54,4 +54,16 @@ output "alb_zone_id" {
 
 output "target_group_arn" {
   value = module.tg-group.target_group_arn
+}
+
+# rds 
+output "endpoint" {
+  value = module.rds.rds_endpoint
+}
+
+
+# ecr ---- 
+
+output "ecr_repository_url" {
+  value = aws_ecr_repository.app_repo.repository_url
 }
