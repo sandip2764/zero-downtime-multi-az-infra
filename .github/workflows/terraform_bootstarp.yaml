@@ -1,0 +1,115 @@
+name: setup bootstrap 
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform/bootstrap
+
+    steps:
+      - name: clone code
+        uses: actions/checkout@v4
+
+      - name: install and configure aws cli
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: install terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: initialize terraform 
+        run: terraform init
+       
+      - name: initialize terraform 
+        run: terraform init
+
+      - name: terraform fmt
+        run: terraform fmt
+        
+      - name: validate terraform code
+        run: terraform validate
+       
+  plan:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform/bootstrap
+
+
+    steps:
+      - name: clone code
+        uses: actions/checkout@v4
+
+      - name: install and configure aws cli
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: install terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: initialize terraform 
+        run: terraform init
+        working-directory: terraform/bootstrap
+      
+      - name: run terraform plan
+        run: terraform plan -out=tfplan
+        working-directory: terraform/bootstrap
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/bootstrap/tfplan
+  
+
+  apply:
+    
+    needs: plan
+
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform/bootstrap
+
+
+    steps:
+      - name: clone code
+        uses: actions/checkout@v4
+
+      - name: install and configure aws cli
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: install terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/bootstrap
+
+      - name: initialize terraform 
+        run: terraform init
+      
+      - name: run terraform apply with plan
+        run: terraform apply -auto-approve tfplan
+
+
+      
