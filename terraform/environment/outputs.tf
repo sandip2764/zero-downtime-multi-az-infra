@@ -61,9 +61,8 @@ output "endpoint" {
   value = module.rds.rds_endpoint
 }
 
+# db secret arn
 
-# ecr ---- 
-
-output "ecr_repository_url" {
-  value = aws_ecr_repository.app_repo.repository_url
+output "db_secret_arn" {
+  value = aws_secretsmanager_secret.db.arn
 }

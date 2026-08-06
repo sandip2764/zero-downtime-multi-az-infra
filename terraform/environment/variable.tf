@@ -114,3 +114,9 @@ variable "skip_final_snapshot" {
   default = true
 }
 
+# end point for alert
+
+variable "email_endpoint" {
+  default = "konjno29@gmail.com"
+  type = string
+}

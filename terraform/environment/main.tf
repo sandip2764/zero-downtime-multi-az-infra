@@ -32,10 +32,14 @@ module "lb_security_group" {
 
 }
 
+
 # launch template
 
 module "launch_template" {
   source = "../module/compute/launch_template"
+
+  project_name = var.project_name
+  db_secret_arn = aws_secretsmanager_secret.db.arn
 
   name_prefix = var.name_prefix
   ami_id = var.ami_id
@@ -43,6 +47,9 @@ module "launch_template" {
   key_name = aws_key_pair.this_key_pair.key_name
   lt_security_group = [ module.lb_security_group.aws_security_group_id ]
 
+  user_data = base64encode(templatefile(
+    
+  ))
 }
 
 # load balancer
@@ -199,17 +206,20 @@ resource "aws_secretsmanager_secret_version" "db" {
 
 }
 
-# ECR
+# monitoring 
 
-resource "aws_ecr_repository" "app_repo" {
-  name                 = "${var.project_name}"
-  image_tag_mutability = "MUTABLE"
+module "monitoring" {
+  source = "../module/monitoring"
 
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+  project_name = var.project_name
 
-  tags = {
-    Name        = "${var.project_name}-ecr"
-  }
+  desired_capacity = module.asg.asg_desired_capacity
+  asg_name = module.asg.asg_name
+  db_instance_identifier = module.rds.db_instance_identifier
+
+  alb_arn_suffix = module.load-balancer.alb_arn_suffix
+  target_group_arn_suffix = module.tg-group.target_group_arn_suffix
+
+  email_endpoint = var.email_endpoint
 }
+
