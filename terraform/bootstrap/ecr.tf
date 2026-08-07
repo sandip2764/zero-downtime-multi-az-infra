@@ -10,6 +10,6 @@ resource "aws_ecr_repository" "app_repo" {
   }
 
   tags = {
-    Name        = "multi-az-zero-downtime-ecr"
+    Name = "multi-az-zero-downtime-ecr"
   }
 }
