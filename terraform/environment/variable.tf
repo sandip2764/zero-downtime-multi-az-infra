@@ -1,3 +1,11 @@
+# region 
+
+variable "region" {
+  type = string
+  default = "us-east-1"
+}
+
+
 variable "project_name" {
   type = string
   default = "multi-az-zero-downtime"
@@ -119,4 +127,9 @@ variable "skip_final_snapshot" {
 variable "email_endpoint" {
   default = "konjno29@gmail.com"
   type = string
+}
+
+variable "docker_image_tag" {
+  type        = string
+  description = "Docker image tag to deploy"
 }

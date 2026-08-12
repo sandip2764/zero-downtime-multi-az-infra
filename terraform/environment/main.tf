@@ -47,9 +47,17 @@ module "launch_template" {
   key_name = aws_key_pair.this_key_pair.key_name
   lt_security_group = [ module.lb_security_group.aws_security_group_id ]
 
-  user_data = base64encode(templatefile(
-    
-  ))
+  user_data = base64encode(
+    templatefile(
+      "${path.module}/templates/user_data.sh",
+      {
+        cloudwatch_config = file("${path.root}/templates/cloudwatch-agent.json")
+        region            = var.region
+        ecr_repository    = data.terraform_remote_state.bootstrap.outputs.ecr_repository_url
+        docker_image      = var.docker_image_tag
+      }
+    )
+  )
 }
 
 # load balancer

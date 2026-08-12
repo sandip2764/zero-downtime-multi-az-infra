@@ -16,6 +16,6 @@ resource "aws_launch_template" "app_lt" {
 
   vpc_security_group_ids = var.lt_security_group
 
-  user_data = var.user_data
+  user_data = base64encode(var.user_data)
 
 }

@@ -1,118 +1,120 @@
-name: Setup Bootstrap 
+name: Deploy AWS Infrastructure
 
 on:
   workflow_dispatch:
 
 jobs:
-  Validate:
+
+  terraform-validate:
     runs-on: ubuntu-latest
 
     defaults:
       run:
-        working-directory: terraform/bootstrap
+        working-directory: terraform/environment
 
     steps:
-      - name: clone code
+
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: install and configure aws cli
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: install terraform
+      - name: Install Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.1
 
-      - name: initialize terraform 
+      - name: Terraform Init
         run: terraform init
 
-      - name: terraform fmt
+      - name: Terraform Format Check
         run: terraform fmt -check
-        
-      - name: validate terraform code
-        run: terraform validate
-       
-  plan:
-    runs-on: ubuntu-latest
 
-    needs: Validate
+      - name: Terraform Validate
+        run: terraform validate
+
+
+  terraform-plan:
+    needs: terraform-validate
+    runs-on: ubuntu-latest
 
     defaults:
       run:
-        working-directory: terraform/bootstrap
-
+        working-directory: terraform/environment
 
     steps:
-      - name: clone code
+
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: install and configure aws cli
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: install terraform
+      - name: Install Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.1
 
-      - name: initialize terraform 
+      - name: Terraform Init
         run: terraform init
-      
-      - name: run terraform plan
-        run: terraform plan -out=tfplan
-       
-      - name: upload artifact
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan -var="docker_image_tag=${GITHUB_SHA}"
+
+      - name: Upload Terraform Plan
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-plan
-          path: terraform/bootstrap/tfplan
-  
+          name: environment-plan
+          path: terraform/environment/tfplan
 
-  apply:
-    
-    needs: plan
 
+  terraform-apply:
+    needs: terraform-plan
     runs-on: ubuntu-latest
 
     defaults:
       run:
-        working-directory: terraform/bootstrap
-
+        working-directory: terraform/environment
 
     steps:
-      - name: clone code
+
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: install and configure aws cli
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: install terraform
+      - name: Install Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.1
 
-      - name: download plan artifact
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.1
+
+      - name: Download Terraform Plan
         uses: actions/download-artifact@v4
         with:
-          name: terraform-plan
-          path: terraform/bootstrap
+          name: environment-plan
+          path: terraform/environment
 
-      - name: initialize terraform 
+      - name: Terraform Init
         run: terraform init
-      
-      - name: run terraform apply with plan
+
+      - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
-
-
-      
