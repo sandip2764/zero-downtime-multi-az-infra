@@ -37,7 +37,7 @@ wget https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-
 
 dpkg -i -E amazon-cloudwatch-agent.deb
 
-# CloudWatch config
+# CloudWatch  config 
 mkdir -p /opt/aws/amazon-cloudwatch-agent/etc/
 
 cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'EOF'
