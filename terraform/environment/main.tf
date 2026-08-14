@@ -54,7 +54,7 @@ module "launch_template" {
         cloudwatch_config = file("${path.root}/templates/cloudwatch-agent.json")
         region            = var.region
         ecr_repository    = data.terraform_remote_state.bootstrap.outputs.ecr_repository_url
-        docker_image      = var.docker_image_tag
+        docker_image = "${data.terraform_remote_state.bootstrap.outputs.ecr_repository_url}:${var.docker_image_tag}"
       }
     )
   )
