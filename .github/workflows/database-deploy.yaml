@@ -1,0 +1,121 @@
+name: Initialize Karfect Database
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  DB_NAME: karfect
+  S3_BUCKET: multi-az-deployment-artifacts
+  SQL_FILE: app/karfect/database/karfect.sql
+
+jobs:
+
+  database-deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ========================================
+      # Checkout
+      # ========================================
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+
+      # ========================================
+      # AWS Credentials
+      # ========================================
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+
+      # ========================================
+      # Upload SQL to S3
+      # ========================================
+
+      - name: Upload SQL to S3
+        run: |
+          aws s3 cp \
+            "${SQL_FILE}" \
+            "s3://${S3_BUCKET}/database/karfect.sql"
+
+
+      # ========================================
+      # Find Running EC2 Instance
+      # ========================================
+
+      - name: Get EC2 Instance ID
+        id: instance
+        run: |
+
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --region "${AWS_REGION}" \
+            --filters \
+              "Name=tag:Name,Values=YOUR-EC2-TAG" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+
+          echo "INSTANCE_ID=${INSTANCE_ID}"
+
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+
+
+      # ========================================
+      # Run Database Setup through SSM
+      # ========================================
+
+      - name: Initialize Database
+        run: |
+
+          COMMAND_ID=$(aws ssm send-command \
+            --region "${AWS_REGION}" \
+            --instance-ids "${{ steps.instance.outputs.instance_id }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "set -e",
+              "echo Installing MySQL client...",
+              "sudo apt-get update -y",
+              "sudo apt-get install -y mysql-client",
+              "echo Downloading SQL file...",
+              "aws s3 cp s3://${S3_BUCKET}/database/karfect.sql /tmp/karfect.sql",
+              "echo Reading database secret...",
+              "SECRET=$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region ${AWS_REGION} --query SecretString --output text)",
+              "DB_HOST=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['host'])\")",
+              "DB_USER=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['username'])\")",
+              "DB_PASS=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['password'])\")",
+              "echo Creating database...",
+              "mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" -e \"CREATE DATABASE IF NOT EXISTS ${DB_NAME};\"",
+              "echo Importing SQL...",
+              "mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" \"${DB_NAME}\" < /tmp/karfect.sql",
+              "echo Database import completed successfully.",
+              "rm -f /tmp/karfect.sql"
+            ]' \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM Command ID: ${COMMAND_ID}"
+
+          aws ssm wait command-executed \
+            --region "${AWS_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${{ steps.instance.outputs.instance_id }}"
+
+
+      # ========================================
+      # Cleanup SQL from S3
+      # ========================================
+
+      - name: Delete SQL from S3
+        if: always()
+        run: |
+          aws s3 rm \
+            "s3://${S3_BUCKET}/database/karfect.sql"
