@@ -1,4 +1,4 @@
-name: Build Docker Image & Push to ECR
+name: Build, Push & Deploy
 
 on:
   workflow_dispatch:
@@ -8,7 +8,8 @@ env:
   ECR_REPOSITORY: multi-az-zero-downtime-ecr
 
 jobs:
-  build:
+
+  build-and-push:
     runs-on: ubuntu-latest
 
     steps:
@@ -41,3 +42,42 @@ jobs:
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+  terraform:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform/environment
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.1
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan -var="docker_image_tag=${GITHUB_SHA}"
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
