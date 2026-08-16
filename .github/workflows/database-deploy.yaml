@@ -49,7 +49,7 @@ jobs:
             --filters \
               "Name=tag:Role,Values=karfect-app" \
               "Name=instance-state-name,Values=running" \
-            --query 'Reservations[].Instances[0].InstanceId' \
+            --query 'Reservations[].Instances[].InstanceId | [0]' \
             --output text)
 
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
