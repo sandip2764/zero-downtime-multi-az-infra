@@ -37,21 +37,23 @@ jobs:
 
 
       # ========================================
-      # Find InService EC2 from ASG
+      # Find Running Karfect EC2
       # ========================================
 
       - name: Get Running EC2 Instance
         id: instance
         run: |
 
-          INSTANCE_ID=$(aws autoscaling describe-auto-scaling-groups \
+          INSTANCE_ID=$(aws ec2 describe-instances \
             --region "${AWS_REGION}" \
-            --auto-scaling-group-names "${ASG_NAME}" \
-            --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId | [0]' \
+            --filters \
+              "Name=tag:Role,Values=karfect-app" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[0].InstanceId' \
             --output text)
 
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "No InService EC2 instance found."
+            echo "No running Karfect EC2 instance found."
             exit 1
           fi
 
