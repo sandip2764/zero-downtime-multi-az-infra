@@ -70,12 +70,12 @@ jobs:
         id: sql
         run: |
 
-          if [ ! -f "app/karfect/database/karfect.sql" ]; then
+          if [ ! -f "app/karfect/Database/karfect.sql" ]; then
             echo "SQL file not found!"
             exit 1
           fi
 
-          base64 -w 0 app/karfect/database/karfect.sql > /tmp/karfect.sql.b64
+          base64 -w 0 app/karfect/Database/karfect.sql > /tmp/karfect.sql.b64
 
           echo "SQL file encoded successfully."
 
