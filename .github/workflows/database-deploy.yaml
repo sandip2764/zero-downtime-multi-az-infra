@@ -6,8 +6,7 @@ on:
 env:
   AWS_REGION: us-east-1
   DB_NAME: karfect
-  S3_BUCKET: multi-az-deployment-artifacts
-  SQL_FILE: app/karfect/database/karfect.sql
+  SECRET_NAME: db_secret_manager
 
 jobs:
 
@@ -18,7 +17,7 @@ jobs:
     steps:
 
       # ========================================
-      # Checkout
+      # Checkout Repository
       # ========================================
 
       - name: Checkout Repository
@@ -26,7 +25,7 @@ jobs:
 
 
       # ========================================
-      # AWS Credentials
+      # Configure AWS Credentials
       # ========================================
 
       - name: Configure AWS Credentials
@@ -38,84 +37,93 @@ jobs:
 
 
       # ========================================
-      # Upload SQL to S3
+      # Find Running Karfect EC2
       # ========================================
 
-      - name: Upload SQL to S3
-        run: |
-          aws s3 cp \
-            "${SQL_FILE}" \
-            "s3://${S3_BUCKET}/database/karfect.sql"
-
-
-      # ========================================
-      # Find Running EC2 Instance
-      # ========================================
-
-      - name: Get EC2 Instance ID
+      - name: Get Running EC2 Instance
         id: instance
         run: |
 
           INSTANCE_ID=$(aws ec2 describe-instances \
             --region "${AWS_REGION}" \
             --filters \
-              "Name=tag:Name,Values=YOUR-EC2-TAG" \
+              "Name=tag:Role,Values=karfect-app" \
               "Name=instance-state-name,Values=running" \
-            --query 'Reservations[0].Instances[0].InstanceId' \
+            --query 'Reservations[].Instances[0].InstanceId' \
             --output text)
 
-          echo "INSTANCE_ID=${INSTANCE_ID}"
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "No running Karfect EC2 instance found."
+            exit 1
+          fi
 
-          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Using EC2: $INSTANCE_ID"
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
 
 
       # ========================================
-      # Run Database Setup through SSM
+      # Encode SQL File
       # ========================================
 
-      - name: Initialize Database
+      - name: Encode SQL File
+        id: sql
         run: |
+
+          if [ ! -f "app/karfect/database/karfect.sql" ]; then
+            echo "SQL file not found!"
+            exit 1
+          fi
+
+          base64 -w 0 app/karfect/database/karfect.sql > /tmp/karfect.sql.b64
+
+          echo "SQL file encoded successfully."
+
+
+      # ========================================
+      # Send Database Command through SSM
+      # ========================================
+
+      - name: Initialize RDS Database
+        env:
+          INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
+        run: |
+
+          SQL_BASE64=$(cat /tmp/karfect.sql.b64)
 
           COMMAND_ID=$(aws ssm send-command \
             --region "${AWS_REGION}" \
-            --instance-ids "${{ steps.instance.outputs.instance_id }}" \
+            --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "set -e",
-              "echo Installing MySQL client...",
-              "sudo apt-get update -y",
-              "sudo apt-get install -y mysql-client",
-              "echo Downloading SQL file...",
-              "aws s3 cp s3://${S3_BUCKET}/database/karfect.sql /tmp/karfect.sql",
-              "echo Reading database secret...",
-              "SECRET=$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region ${AWS_REGION} --query SecretString --output text)",
-              "DB_HOST=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['host'])\")",
-              "DB_USER=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['username'])\")",
-              "DB_PASS=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['password'])\")",
-              "echo Creating database...",
-              "mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" -e \"CREATE DATABASE IF NOT EXISTS ${DB_NAME};\"",
-              "echo Importing SQL...",
-              "mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" \"${DB_NAME}\" < /tmp/karfect.sql",
-              "echo Database import completed successfully.",
-              "rm -f /tmp/karfect.sql"
-            ]' \
+            --parameters "commands=[
+              \"set -e\",
+              \"echo 'Installing MySQL client...'\",
+              \"sudo apt-get update -y\",
+              \"sudo apt-get install -y mysql-client\",
+              \"echo 'Reading database secret...'\",
+              \"SECRET=\\$(aws secretsmanager get-secret-value --secret-id ${SECRET_NAME} --region ${AWS_REGION} --query SecretString --output text)\",
+              \"DB_HOST=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"host\\\"])')\",
+              \"DB_USER=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"username\\\"])')\",
+              \"DB_PASS=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"password\\\"])')\",
+              \"echo 'Creating database...'\",
+              \"mysql -h \\\"\\$DB_HOST\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" -e 'CREATE DATABASE IF NOT EXISTS ${DB_NAME};'\",
+              \"echo 'Writing SQL file...'\",
+              \"echo '${SQL_BASE64}' | base64 -d > /tmp/karfect.sql\",
+              \"echo 'Importing database...'\",
+              \"mysql -h \\\"\\$DB_HOST\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" ${DB_NAME} < /tmp/karfect.sql\",
+              \"rm -f /tmp/karfect.sql\",
+              \"echo 'Database initialization completed successfully.'\"
+            ]" \
             --query 'Command.CommandId' \
             --output text)
 
-          echo "SSM Command ID: ${COMMAND_ID}"
+          echo "SSM Command ID: $COMMAND_ID"
+
+          echo "Waiting for SSM command..."
 
           aws ssm wait command-executed \
             --region "${AWS_REGION}" \
-            --command-id "${COMMAND_ID}" \
-            --instance-id "${{ steps.instance.outputs.instance_id }}"
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
 
-
-      # ========================================
-      # Cleanup SQL from S3
-      # ========================================
-
-      - name: Delete SQL from S3
-        if: always()
-        run: |
-          aws s3 rm \
-            "s3://${S3_BUCKET}/database/karfect.sql"
+          echo "Database deployment completed."

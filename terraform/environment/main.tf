@@ -148,6 +148,7 @@ module "asg" {
 
   tags = {
     Name = "${var.project_name}-asg"
+    Role = "karfect-app"
   }
 }
 
