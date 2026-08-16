@@ -5,8 +5,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  DB_NAME: karfect
   SECRET_NAME: db_secret_manager
+  ASG_NAME: multi-az-zero-downtime-asg-asg
 
 jobs:
 
@@ -37,23 +37,21 @@ jobs:
 
 
       # ========================================
-      # Find Running Karfect EC2
+      # Find InService EC2 from ASG
       # ========================================
 
       - name: Get Running EC2 Instance
         id: instance
         run: |
 
-          INSTANCE_ID=$(aws ec2 describe-instances \
+          INSTANCE_ID=$(aws autoscaling describe-auto-scaling-groups \
             --region "${AWS_REGION}" \
-            --filters \
-              "Name=tag:Role,Values=karfect-app" \
-              "Name=instance-state-name,Values=running" \
-            --query 'Reservations[].Instances[0].InstanceId' \
+            --auto-scaling-group-names "${ASG_NAME}" \
+            --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId | [0]' \
             --output text)
 
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "No running Karfect EC2 instance found."
+            echo "No InService EC2 instance found."
             exit 1
           fi
 
@@ -63,11 +61,10 @@ jobs:
 
 
       # ========================================
-      # Encode SQL File
+      # Check SQL File
       # ========================================
 
-      - name: Encode SQL File
-        id: sql
+      - name: Check SQL File
         run: |
 
           if [ ! -f "app/karfect/Database/karfect.sql" ]; then
@@ -75,16 +72,30 @@ jobs:
             exit 1
           fi
 
-          base64 -w 0 app/karfect/Database/karfect.sql > /tmp/karfect.sql.b64
+          echo "SQL file found:"
+          ls -lh app/karfect/Database/karfect.sql
+
+
+      # ========================================
+      # Encode SQL File
+      # ========================================
+
+      - name: Encode SQL File
+        run: |
+
+          base64 -w 0 \
+            app/karfect/Database/karfect.sql \
+            > /tmp/karfect.sql.b64
 
           echo "SQL file encoded successfully."
 
 
       # ========================================
-      # Send Database Command through SSM
+      # Initialize RDS Database through SSM
       # ========================================
 
       - name: Initialize RDS Database
+        id: database
         env:
           INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
         run: |
@@ -97,22 +108,42 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --parameters "commands=[
               \"set -e\",
+              \"echo '========================================'\",
               \"echo 'Installing MySQL client...'\",
+              \"echo '========================================'\",
               \"sudo apt-get update -y\",
-              \"sudo apt-get install -y mysql-client\",
+              \"sudo apt-get install -y mysql-client jq\",
+              \"echo 'MySQL client and jq installed.'\",
               \"echo 'Reading database secret...'\",
               \"SECRET=\\$(aws secretsmanager get-secret-value --secret-id ${SECRET_NAME} --region ${AWS_REGION} --query SecretString --output text)\",
-              \"DB_HOST=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"host\\\"])')\",
-              \"DB_USER=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"username\\\"])')\",
-              \"DB_PASS=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"password\\\"])')\",
+              \"DB_HOST=\\$(echo \\\"\\$SECRET\\\" | jq -r '.host')\",
+              \"DB_USER=\\$(echo \\\"\\$SECRET\\\" | jq -r '.username')\",
+              \"DB_PASS=\\$(echo \\\"\\$SECRET\\\" | jq -r '.password')\",
+              \"DB_NAME=\\$(echo \\\"\\$SECRET\\\" | jq -r '.database')\",
+              \"DB_PORT=\\$(echo \\\"\\$SECRET\\\" | jq -r '.port')\",
+              \"echo \\\"Database: \\$DB_NAME\\\"\",
+              \"echo \\\"Host: \\$DB_HOST\\\"\",
+              \"echo \\\"Port: \\$DB_PORT\\\"\",
+              \"echo \\\"User: \\$DB_USER\\\"\",
+              \"if [ -z \\\"\\$DB_HOST\\\" ] || [ \\\"\\$DB_HOST\\\" = \\\"null\\\" ]; then echo 'ERROR: DB_HOST is empty'; exit 1; fi\",
+              \"if [ -z \\\"\\$DB_USER\\\" ] || [ \\\"\\$DB_USER\\\" = \\\"null\\\" ]; then echo 'ERROR: DB_USER is empty'; exit 1; fi\",
+              \"if [ -z \\\"\\$DB_PASS\\\" ] || [ \\\"\\$DB_PASS\\\" = \\\"null\\\" ]; then echo 'ERROR: DB_PASS is empty'; exit 1; fi\",
+              \"if [ -z \\\"\\$DB_NAME\\\" ] || [ \\\"\\$DB_NAME\\\" = \\\"null\\\" ]; then echo 'ERROR: DB_NAME is empty'; exit 1; fi\",
+              \"echo 'Testing RDS connection...'\",
+              \"mysql -h \\\"\\$DB_HOST\\\" -P \\\"\\$DB_PORT\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" -e 'SELECT 1;'\",
+              \"echo 'RDS connection successful.'\",
               \"echo 'Creating database...'\",
-              \"mysql -h \\\"\\$DB_HOST\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" -e 'CREATE DATABASE IF NOT EXISTS ${DB_NAME};'\",
+              \"mysql -h \\\"\\$DB_HOST\\\" -P \\\"\\$DB_PORT\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" -e \\\"CREATE DATABASE IF NOT EXISTS \\\\\\\"\\$DB_NAME\\\\\\\";\\\"\",
+              \"echo 'Database created/verified.'\",
               \"echo 'Writing SQL file...'\",
               \"echo '${SQL_BASE64}' | base64 -d > /tmp/karfect.sql\",
               \"echo 'Importing database...'\",
-              \"mysql -h \\\"\\$DB_HOST\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" ${DB_NAME} < /tmp/karfect.sql\",
+              \"mysql -h \\\"\\$DB_HOST\\\" -P \\\"\\$DB_PORT\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" \\\"\\$DB_NAME\\\" < /tmp/karfect.sql\",
+              \"echo 'SQL import completed.'\",
               \"rm -f /tmp/karfect.sql\",
-              \"echo 'Database initialization completed successfully.'\"
+              \"echo '========================================'\",
+              \"echo 'DATABASE INITIALIZATION SUCCESSFUL'\",
+              \"echo '========================================'\"
             ]" \
             --query 'Command.CommandId' \
             --output text)
@@ -126,4 +157,4 @@ jobs:
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID"
 
-          echo "Database deployment completed."
+          echo "Database deployment completed successfully."
