@@ -102,50 +102,139 @@ jobs:
           INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
         run: |
 
+          echo "Creating remote database script..."
+
           SQL_BASE64=$(cat /tmp/karfect.sql.b64)
+
+          cat > /tmp/db-init.sh <<EOF
+          #!/bin/bash
+
+          set -e
+
+          echo "========================================"
+          echo "Installing required packages"
+          echo "========================================"
+
+          sudo apt-get update -y
+          sudo apt-get install -y mysql-client jq
+
+          echo "Packages installed."
+
+          echo "========================================"
+          echo "Reading Secrets Manager"
+          echo "========================================"
+
+          SECRET=\$(aws secretsmanager get-secret-value \
+            --secret-id ${SECRET_NAME} \
+            --region ${AWS_REGION} \
+            --query SecretString \
+            --output text)
+
+          if [ -z "\$SECRET" ] || [ "\$SECRET" = "None" ]; then
+            echo "ERROR: Could not retrieve database secret."
+            exit 1
+          fi
+
+          DB_HOST=\$(echo "\$SECRET" | jq -r '.host')
+          DB_USER=\$(echo "\$SECRET" | jq -r '.username')
+          DB_PASS=\$(echo "\$SECRET" | jq -r '.password')
+          DB_NAME=\$(echo "\$SECRET" | jq -r '.database')
+          DB_PORT=\$(echo "\$SECRET" | jq -r '.port')
+
+          echo "Database : \$DB_NAME"
+          echo "Host     : \$DB_HOST"
+          echo "Port     : \$DB_PORT"
+          echo "Username : \$DB_USER"
+
+          if [ -z "\$DB_HOST" ] || [ "\$DB_HOST" = "null" ]; then
+            echo "ERROR: DB_HOST is empty."
+            exit 1
+          fi
+
+          if [ -z "\$DB_USER" ] || [ "\$DB_USER" = "null" ]; then
+            echo "ERROR: DB_USER is empty."
+            exit 1
+          fi
+
+          if [ -z "\$DB_PASS" ] || [ "\$DB_PASS" = "null" ]; then
+            echo "ERROR: DB_PASS is empty."
+            exit 1
+          fi
+
+          if [ -z "\$DB_NAME" ] || [ "\$DB_NAME" = "null" ]; then
+            echo "ERROR: DB_NAME is empty."
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "Testing RDS connection"
+          echo "========================================"
+
+          mysql \
+            -h "\$DB_HOST" \
+            -P "\$DB_PORT" \
+            -u "\$DB_USER" \
+            -p"\$DB_PASS" \
+            -e "SELECT 1;"
+
+          echo "RDS connection successful."
+
+          echo "========================================"
+          echo "Creating database"
+          echo "========================================"
+
+          mysql \
+            -h "\$DB_HOST" \
+            -P "\$DB_PORT" \
+            -u "\$DB_USER" \
+            -p"\$DB_PASS" \
+            -e "CREATE DATABASE IF NOT EXISTS \\\`\$DB_NAME\\\`;"
+
+          echo "Database \$DB_NAME created/verified."
+
+          echo "========================================"
+          echo "Writing SQL file"
+          echo "========================================"
+
+          echo "${SQL_BASE64}" | base64 -d > /tmp/karfect.sql
+
+          echo "SQL file created."
+
+          echo "========================================"
+          echo "Importing database"
+          echo "========================================"
+
+          mysql \
+            -h "\$DB_HOST" \
+            -P "\$DB_PORT" \
+            -u "\$DB_USER" \
+            -p"\$DB_PASS" \
+            "\$DB_NAME" < /tmp/karfect.sql
+
+          echo "SQL import completed."
+
+          rm -f /tmp/karfect.sql
+
+          echo "========================================"
+          echo "DATABASE INITIALIZATION SUCCESSFUL"
+          echo "========================================"
+          EOF
+
+          echo "Encoding remote script..."
+
+          SCRIPT_BASE64=$(base64 -w 0 /tmp/db-init.sh)
+
+          echo "Sending script to EC2 through SSM..."
 
           COMMAND_ID=$(aws ssm send-command \
             --region "${AWS_REGION}" \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --parameters "commands=[
-              \"set -e\",
-              \"echo '========================================'\",
-              \"echo 'Installing MySQL client...'\",
-              \"echo '========================================'\",
-              \"sudo apt-get update -y\",
-              \"sudo apt-get install -y mysql-client jq\",
-              \"echo 'MySQL client and jq installed.'\",
-              \"echo 'Reading database secret...'\",
-              \"SECRET=\\$(aws secretsmanager get-secret-value --secret-id ${SECRET_NAME} --region ${AWS_REGION} --query SecretString --output text)\",
-              \"DB_HOST=\\$(echo \\\"\\$SECRET\\\" | jq -r '.host')\",
-              \"DB_USER=\\$(echo \\\"\\$SECRET\\\" | jq -r '.username')\",
-              \"DB_PASS=\\$(echo \\\"\\$SECRET\\\" | jq -r '.password')\",
-              \"DB_NAME=\\$(echo \\\"\\$SECRET\\\" | jq -r '.database')\",
-              \"DB_PORT=\\$(echo \\\"\\$SECRET\\\" | jq -r '.port')\",
-              \"echo \\\"Database: \\$DB_NAME\\\"\",
-              \"echo \\\"Host: \\$DB_HOST\\\"\",
-              \"echo \\\"Port: \\$DB_PORT\\\"\",
-              \"echo \\\"User: \\$DB_USER\\\"\",
-              \"if [ -z \\\"\\$DB_HOST\\\" ] || [ \\\"\\$DB_HOST\\\" = \\\"null\\\" ]; then echo 'ERROR: DB_HOST is empty'; exit 1; fi\",
-              \"if [ -z \\\"\\$DB_USER\\\" ] || [ \\\"\\$DB_USER\\\" = \\\"null\\\" ]; then echo 'ERROR: DB_USER is empty'; exit 1; fi\",
-              \"if [ -z \\\"\\$DB_PASS\\\" ] || [ \\\"\\$DB_PASS\\\" = \\\"null\\\" ]; then echo 'ERROR: DB_PASS is empty'; exit 1; fi\",
-              \"if [ -z \\\"\\$DB_NAME\\\" ] || [ \\\"\\$DB_NAME\\\" = \\\"null\\\" ]; then echo 'ERROR: DB_NAME is empty'; exit 1; fi\",
-              \"echo 'Testing RDS connection...'\",
-              \"mysql -h \\\"\\$DB_HOST\\\" -P \\\"\\$DB_PORT\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" -e 'SELECT 1;'\",
-              \"echo 'RDS connection successful.'\",
-              \"echo 'Creating database...'\",
-              \"mysql -h \\\"\\$DB_HOST\\\" -P \\\"\\$DB_PORT\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" -e \\\"CREATE DATABASE IF NOT EXISTS \\\\\\\"\\$DB_NAME\\\\\\\";\\\"\",
-              \"echo 'Database created/verified.'\",
-              \"echo 'Writing SQL file...'\",
-              \"echo '${SQL_BASE64}' | base64 -d > /tmp/karfect.sql\",
-              \"echo 'Importing database...'\",
-              \"mysql -h \\\"\\$DB_HOST\\\" -P \\\"\\$DB_PORT\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" \\\"\\$DB_NAME\\\" < /tmp/karfect.sql\",
-              \"echo 'SQL import completed.'\",
-              \"rm -f /tmp/karfect.sql\",
-              \"echo '========================================'\",
-              \"echo 'DATABASE INITIALIZATION SUCCESSFUL'\",
-              \"echo '========================================'\"
+              \"echo '${SCRIPT_BASE64}' | base64 -d > /tmp/db-init.sh\",
+              \"chmod +x /tmp/db-init.sh\",
+              \"bash /tmp/db-init.sh\",
+              \"rm -f /tmp/db-init.sh\"
             ]" \
             --query 'Command.CommandId' \
             --output text)
@@ -159,4 +248,6 @@ jobs:
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID"
 
-          echo "Database deployment completed successfully."
+          echo "========================================"
+          echo "Database deployment completed."
+          echo "========================================"
