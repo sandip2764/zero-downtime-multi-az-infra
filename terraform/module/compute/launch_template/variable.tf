@@ -37,6 +37,11 @@ variable "db_secret_arn" {
   type        = string
 }
 
+variable "db_artifact_bucket_arn" {
+  description = "ARN of the S3 bucket containing database artifacts"
+  type        = string
+}
+
 variable "common_tags" {
   description = "Common tags"
   type        = map(string)

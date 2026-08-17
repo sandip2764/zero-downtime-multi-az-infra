@@ -50,7 +50,7 @@ resource "aws_iam_policy" "db_artifact_read" {
           "s3:GetObject"
         ]
 
-        Resource = "${aws_s3_bucket.db_artifacts.arn}/*"
+        Resource = "${var.db_artifact_bucket_arn}/*"
       }
     ]
   })
