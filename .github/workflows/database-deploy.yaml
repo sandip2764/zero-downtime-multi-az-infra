@@ -66,7 +66,7 @@ jobs:
         id: bucket
         run: |
 
-          BUCKET=$(terraform output -raw db_artifact_bucket_name)
+          BUCKET=$(terraform output -raw db_artifact_bucket)
 
           if [ -z "$BUCKET" ]; then
             echo "ERROR: Terraform output db_artifact_bucket_name is empty."
