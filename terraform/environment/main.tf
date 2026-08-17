@@ -46,7 +46,7 @@ module "launch_template" {
   instance_type     = var.instance_type
   key_name          = aws_key_pair.this_key_pair.key_name
   lt_security_group = [module.lb_security_group.aws_security_group_id]
-  
+
   db_artifact_bucket_arn = aws_s3_bucket.db_artifacts.arn
 
   user_data = base64encode(
