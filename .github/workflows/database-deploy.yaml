@@ -14,19 +14,23 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: terraform/environment
+
     steps:
 
-      # ----------------------------------------
-      # Checkout
-      # ----------------------------------------
+      # ========================================
+      # 1. Checkout Repository
+      # ========================================
 
       - name: Checkout Repository
         uses: actions/checkout@v4
 
 
-      # ----------------------------------------
-      # AWS Credentials
-      # ----------------------------------------
+      # ========================================
+      # 2. Configure AWS Credentials
+      # ========================================
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -36,42 +40,76 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
 
-      # ----------------------------------------
-      # Get S3 Bucket Name
-      # ----------------------------------------
+      # ========================================
+      # 3. Install Terraform
+      # ========================================
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.1
+
+
+      # ========================================
+      # 4. Terraform Init
+      # ========================================
+
+      - name: Terraform Init
+        run: terraform init
+
+
+      # ========================================
+      # 5. Get S3 Bucket Name from Terraform State
+      # ========================================
 
       - name: Get DB Artifact Bucket
         id: bucket
         run: |
 
-          BUCKET=$(aws s3api list-buckets \
-            --query "Buckets[?starts_with(Name, '${{ github.event.repository.name }}-db-artifacts')].Name | [0]" \
-            --output text)
+          BUCKET=$(terraform output -raw db_artifact_bucket_name)
 
-          echo "Bucket: ${BUCKET}"
+          if [ -z "$BUCKET" ]; then
+            echo "ERROR: Terraform output db_artifact_bucket_name is empty."
+            exit 1
+          fi
 
-          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+          echo "DB artifact bucket: $BUCKET"
+
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
 
 
-      # ----------------------------------------
-      # Upload SQL
-      # ----------------------------------------
+      # ========================================
+      # 6. Upload SQL File to S3
+      # ========================================
 
       - name: Upload Database SQL
+        working-directory: ${{ github.workspace }}
         run: |
+
+          if [ ! -f "${SQL_FILE}" ]; then
+            echo "ERROR: SQL file not found: ${SQL_FILE}"
+            exit 1
+          fi
+
+          echo "Uploading ${SQL_FILE}..."
 
           aws s3 cp \
             "${SQL_FILE}" \
             "s3://${{ steps.bucket.outputs.bucket }}/database/karfect.sql"
 
+          echo "SQL file uploaded successfully."
 
-      # ----------------------------------------
-      # Find Running Application EC2
-      # ----------------------------------------
+
+      # ========================================
+      # 7. Find Running Application EC2
+      # ========================================
 
       - name: Find Application EC2
         id: instance
+        working-directory: ${{ github.workspace }}
         run: |
+
+          echo "Finding running application EC2..."
 
           INSTANCE_ID=$(aws ec2 describe-instances \
             --region "${AWS_REGION}" \
@@ -81,90 +119,180 @@ jobs:
             --query 'Reservations[].Instances[].InstanceId | [0]' \
             --output text)
 
-          echo "Instance ID: ${INSTANCE_ID}"
+          echo "Found instance: ${INSTANCE_ID}"
 
           if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
-            echo "No running application EC2 found."
+            echo "ERROR: No running EC2 instance found with:"
+            echo "Role=karfect-app"
             exit 1
           fi
 
           echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
 
 
-      # ----------------------------------------
-      # Send SSM Command
-      # ----------------------------------------
+      # ========================================
+      # 8. Create SSM Command JSON
+      # ========================================
 
-      - name: Initialize Database
+      - name: Create SSM Command
         id: ssm
+        working-directory: ${{ github.workspace }}
         run: |
+
+          BUCKET="${{ steps.bucket.outputs.bucket }}"
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+
+          python3 - <<PY
+          import json
+
+          bucket = "${BUCKET}"
+          db_name = "${DB_NAME}"
+
+          commands = [
+              "set -e",
+
+              "echo '========================================'",
+              "echo 'Installing MySQL client'",
+              "echo '========================================'",
+
+              "sudo apt-get update -y",
+              "sudo apt-get install -y mysql-client",
+
+              "echo '========================================'",
+              "echo 'Downloading SQL file from S3'",
+              "echo '========================================'",
+
+              f"aws s3 cp s3://{bucket}/database/karfect.sql /tmp/karfect.sql",
+
+              "echo '========================================'",
+              "echo 'Reading database secret'",
+              "echo '========================================'",
+
+              "SECRET=$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region us-east-1 --query SecretString --output text)",
+
+              "DB_HOST=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['host'])\")",
+
+              "DB_USER=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['username'])\")",
+
+              "DB_PASS=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['password'])\")",
+
+              "echo 'Database credentials loaded successfully.'",
+
+              "echo '========================================'",
+              "echo 'Creating database'",
+              "echo '========================================'",
+
+              f"mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" -e \"CREATE DATABASE IF NOT EXISTS {db_name};\"",
+
+              "echo '========================================'",
+              "echo 'Importing SQL database'",
+              "echo '========================================'",
+
+              f"mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" {db_name} < /tmp/karfect.sql",
+
+              "echo '========================================'",
+              "echo 'Database import completed successfully'",
+              "echo '========================================'",
+
+              "rm -f /tmp/karfect.sql",
+
+              "echo 'Temporary SQL file deleted.'"
+          ]
+
+          with open("/tmp/ssm-commands.json", "w") as f:
+              json.dump({"commands": commands}, f)
+
+          print("SSM command payload created.")
+
 
           COMMAND_ID=$(aws ssm send-command \
             --region "${AWS_REGION}" \
-            --instance-ids "${{ steps.instance.outputs.instance_id }}" \
+            --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "set -e",
-              "echo Installing MySQL client...",
-              "sudo apt-get update -y",
-              "sudo apt-get install -y mysql-client",
-              "echo Downloading SQL file...",
-              "aws s3 cp s3://${{ steps.bucket.outputs.bucket }}/database/karfect.sql /tmp/karfect.sql",
-              "echo Reading database secret...",
-              "SECRET=$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region us-east-1 --query SecretString --output text)",
-              "DB_HOST=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['host'])\")",
-              "DB_USER=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['username'])\")",
-              "DB_PASS=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['password'])\")",
-              "echo Creating database...",
-              "mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" -e \"CREATE DATABASE IF NOT EXISTS ${DB_NAME};\"",
-              "echo Importing database...",
-              "mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" \"${DB_NAME}\" < /tmp/karfect.sql",
-              "echo Database import completed successfully.",
-              "rm -f /tmp/karfect.sql"
-            ]' \
+            --parameters file:///tmp/ssm-commands.json \
             --query 'Command.CommandId' \
             --output text)
 
-          echo "Command ID: ${COMMAND_ID}"
+          echo "SSM Command ID: ${COMMAND_ID}"
 
           echo "command_id=${COMMAND_ID}" >> "$GITHUB_OUTPUT"
 
 
-      # ----------------------------------------
-      # Wait for SSM Command
-      # ----------------------------------------
+      # ========================================
+      # 9. Wait for SSM Command
+      # ========================================
 
-      - name: Wait for Database Import
+      - name: Wait for SSM Command
+        working-directory: ${{ github.workspace }}
         run: |
+
+          echo "Waiting for database initialization..."
 
           aws ssm wait command-executed \
             --region "${AWS_REGION}" \
             --command-id "${{ steps.ssm.outputs.command_id }}" \
             --instance-id "${{ steps.instance.outputs.instance_id }}"
 
+          echo "SSM command finished."
 
-      # ----------------------------------------
-      # Show SSM Output
-      # ----------------------------------------
 
-      - name: Show Database Import Result
+      # ========================================
+      # 10. Check SSM Result
+      # ========================================
+
+      - name: Check Database Import Result
+        working-directory: ${{ github.workspace }}
         run: |
+
+          STATUS=$(aws ssm get-command-invocation \
+            --region "${AWS_REGION}" \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ steps.instance.outputs.instance_id }}" \
+            --query 'Status' \
+            --output text)
+
+          echo "SSM Status: ${STATUS}"
+
+          echo ""
+          echo "========== COMMAND OUTPUT =========="
+          
+          aws ssm get-command-invocation \
+            --region "${AWS_REGION}" \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ steps.instance.outputs.instance_id }}" \
+            --query 'StandardOutputContent' \
+            --output text
+
+          echo ""
+          echo "========== COMMAND ERROR =========="
 
           aws ssm get-command-invocation \
             --region "${AWS_REGION}" \
             --command-id "${{ steps.ssm.outputs.command_id }}" \
             --instance-id "${{ steps.instance.outputs.instance_id }}" \
-            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
-            --output json
+            --query 'StandardErrorContent' \
+            --output text
+
+          if [ "${STATUS}" != "Success" ]; then
+            echo "ERROR: Database initialization failed."
+            exit 1
+          fi
+
+          echo "Database initialization successful."
 
 
-      # ----------------------------------------
-      # Delete SQL from S3
-      # ----------------------------------------
+      # ========================================
+      # 11. Delete SQL from S3
+      # ========================================
 
-      - name: Delete SQL Artifact
+      - name: Delete SQL File from S3
         if: always()
+        working-directory: ${{ github.workspace }}
         run: |
+
+          echo "Removing SQL file from S3..."
 
           aws s3 rm \
             "s3://${{ steps.bucket.outputs.bucket }}/database/karfect.sql"
+
+          echo "SQL file removed from S3."
