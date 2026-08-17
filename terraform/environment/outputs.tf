@@ -67,3 +67,8 @@ output "db_secret_arn" {
   value = aws_secretsmanager_secret.db.arn
 }
 
+
+
+output "db_artifact_bucket" {
+  value = aws_s3_bucket.db_artifacts.bucket
+}

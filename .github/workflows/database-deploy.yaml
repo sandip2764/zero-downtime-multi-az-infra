@@ -5,8 +5,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  SECRET_NAME: db_secret_manager
-  ASG_NAME: multi-az-zero-downtime-asg-asg
+  DB_NAME: karfect
+  SQL_FILE: app/karfect/Database/karfect.sql
 
 jobs:
 
@@ -16,17 +16,17 @@ jobs:
 
     steps:
 
-      # ========================================
-      # Checkout Repository
-      # ========================================
+      # ----------------------------------------
+      # Checkout
+      # ----------------------------------------
 
       - name: Checkout Repository
         uses: actions/checkout@v4
 
 
-      # ========================================
-      # Configure AWS Credentials
-      # ========================================
+      # ----------------------------------------
+      # AWS Credentials
+      # ----------------------------------------
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -36,11 +36,40 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
 
-      # ========================================
-      # Find Running Karfect EC2
-      # ========================================
+      # ----------------------------------------
+      # Get S3 Bucket Name
+      # ----------------------------------------
 
-      - name: Get Running EC2 Instance
+      - name: Get DB Artifact Bucket
+        id: bucket
+        run: |
+
+          BUCKET=$(aws s3api list-buckets \
+            --query "Buckets[?starts_with(Name, '${{ github.event.repository.name }}-db-artifacts')].Name | [0]" \
+            --output text)
+
+          echo "Bucket: ${BUCKET}"
+
+          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+
+
+      # ----------------------------------------
+      # Upload SQL
+      # ----------------------------------------
+
+      - name: Upload Database SQL
+        run: |
+
+          aws s3 cp \
+            "${SQL_FILE}" \
+            "s3://${{ steps.bucket.outputs.bucket }}/database/karfect.sql"
+
+
+      # ----------------------------------------
+      # Find Running Application EC2
+      # ----------------------------------------
+
+      - name: Find Application EC2
         id: instance
         run: |
 
@@ -52,202 +81,90 @@ jobs:
             --query 'Reservations[].Instances[].InstanceId | [0]' \
             --output text)
 
-          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "No running Karfect EC2 instance found."
+          echo "Instance ID: ${INSTANCE_ID}"
+
+          if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
+            echo "No running application EC2 found."
             exit 1
           fi
 
-          echo "Using EC2: $INSTANCE_ID"
-
-          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
 
 
-      # ========================================
-      # Check SQL File
-      # ========================================
+      # ----------------------------------------
+      # Send SSM Command
+      # ----------------------------------------
 
-      - name: Check SQL File
+      - name: Initialize Database
+        id: ssm
         run: |
-
-          if [ ! -f "app/karfect/Database/karfect.sql" ]; then
-            echo "SQL file not found!"
-            exit 1
-          fi
-
-          echo "SQL file found:"
-          ls -lh app/karfect/Database/karfect.sql
-
-
-      # ========================================
-      # Encode SQL File
-      # ========================================
-
-      - name: Encode SQL File
-        run: |
-
-          base64 -w 0 \
-            app/karfect/Database/karfect.sql \
-            > /tmp/karfect.sql.b64
-
-          echo "SQL file encoded successfully."
-
-
-      # ========================================
-      # Initialize RDS Database through SSM
-      # ========================================
-
-      - name: Initialize RDS Database
-        id: database
-        env:
-          INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
-        run: |
-
-          echo "Creating remote database script..."
-
-          SQL_BASE64=$(cat /tmp/karfect.sql.b64)
-
-          cat > /tmp/db-init.sh <<EOF
-          #!/bin/bash
-
-          set -e
-
-          echo "========================================"
-          echo "Installing required packages"
-          echo "========================================"
-
-          sudo apt-get update -y
-          sudo apt-get install -y mysql-client jq
-
-          echo "Packages installed."
-
-          echo "========================================"
-          echo "Reading Secrets Manager"
-          echo "========================================"
-
-          SECRET=\$(aws secretsmanager get-secret-value \
-            --secret-id ${SECRET_NAME} \
-            --region ${AWS_REGION} \
-            --query SecretString \
-            --output text)
-
-          if [ -z "\$SECRET" ] || [ "\$SECRET" = "None" ]; then
-            echo "ERROR: Could not retrieve database secret."
-            exit 1
-          fi
-
-          DB_HOST=\$(echo "\$SECRET" | jq -r '.host')
-          DB_USER=\$(echo "\$SECRET" | jq -r '.username')
-          DB_PASS=\$(echo "\$SECRET" | jq -r '.password')
-          DB_NAME=\$(echo "\$SECRET" | jq -r '.database')
-          DB_PORT=\$(echo "\$SECRET" | jq -r '.port')
-
-          echo "Database : \$DB_NAME"
-          echo "Host     : \$DB_HOST"
-          echo "Port     : \$DB_PORT"
-          echo "Username : \$DB_USER"
-
-          if [ -z "\$DB_HOST" ] || [ "\$DB_HOST" = "null" ]; then
-            echo "ERROR: DB_HOST is empty."
-            exit 1
-          fi
-
-          if [ -z "\$DB_USER" ] || [ "\$DB_USER" = "null" ]; then
-            echo "ERROR: DB_USER is empty."
-            exit 1
-          fi
-
-          if [ -z "\$DB_PASS" ] || [ "\$DB_PASS" = "null" ]; then
-            echo "ERROR: DB_PASS is empty."
-            exit 1
-          fi
-
-          if [ -z "\$DB_NAME" ] || [ "\$DB_NAME" = "null" ]; then
-            echo "ERROR: DB_NAME is empty."
-            exit 1
-          fi
-
-          echo "========================================"
-          echo "Testing RDS connection"
-          echo "========================================"
-
-          mysql \
-            -h "\$DB_HOST" \
-            -P "\$DB_PORT" \
-            -u "\$DB_USER" \
-            -p"\$DB_PASS" \
-            -e "SELECT 1;"
-
-          echo "RDS connection successful."
-
-          echo "========================================"
-          echo "Creating database"
-          echo "========================================"
-
-          mysql \
-            -h "\$DB_HOST" \
-            -P "\$DB_PORT" \
-            -u "\$DB_USER" \
-            -p"\$DB_PASS" \
-            -e "CREATE DATABASE IF NOT EXISTS \\\`\$DB_NAME\\\`;"
-
-          echo "Database \$DB_NAME created/verified."
-
-          echo "========================================"
-          echo "Writing SQL file"
-          echo "========================================"
-
-          echo "${SQL_BASE64}" | base64 -d > /tmp/karfect.sql
-
-          echo "SQL file created."
-
-          echo "========================================"
-          echo "Importing database"
-          echo "========================================"
-
-          mysql \
-            -h "\$DB_HOST" \
-            -P "\$DB_PORT" \
-            -u "\$DB_USER" \
-            -p"\$DB_PASS" \
-            "\$DB_NAME" < /tmp/karfect.sql
-
-          echo "SQL import completed."
-
-          rm -f /tmp/karfect.sql
-
-          echo "========================================"
-          echo "DATABASE INITIALIZATION SUCCESSFUL"
-          echo "========================================"
-          EOF
-
-          echo "Encoding remote script..."
-
-          SCRIPT_BASE64=$(base64 -w 0 /tmp/db-init.sh)
-
-          echo "Sending script to EC2 through SSM..."
 
           COMMAND_ID=$(aws ssm send-command \
             --region "${AWS_REGION}" \
-            --instance-ids "$INSTANCE_ID" \
+            --instance-ids "${{ steps.instance.outputs.instance_id }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[
-              \"echo '${SCRIPT_BASE64}' | base64 -d > /tmp/db-init.sh\",
-              \"chmod +x /tmp/db-init.sh\",
-              \"bash /tmp/db-init.sh\",
-              \"rm -f /tmp/db-init.sh\"
-            ]" \
+            --parameters 'commands=[
+              "set -e",
+              "echo Installing MySQL client...",
+              "sudo apt-get update -y",
+              "sudo apt-get install -y mysql-client",
+              "echo Downloading SQL file...",
+              "aws s3 cp s3://${{ steps.bucket.outputs.bucket }}/database/karfect.sql /tmp/karfect.sql",
+              "echo Reading database secret...",
+              "SECRET=$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region us-east-1 --query SecretString --output text)",
+              "DB_HOST=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['host'])\")",
+              "DB_USER=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['username'])\")",
+              "DB_PASS=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['password'])\")",
+              "echo Creating database...",
+              "mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" -e \"CREATE DATABASE IF NOT EXISTS ${DB_NAME};\"",
+              "echo Importing database...",
+              "mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" \"${DB_NAME}\" < /tmp/karfect.sql",
+              "echo Database import completed successfully.",
+              "rm -f /tmp/karfect.sql"
+            ]' \
             --query 'Command.CommandId' \
             --output text)
 
-          echo "SSM Command ID: $COMMAND_ID"
+          echo "Command ID: ${COMMAND_ID}"
 
-          echo "Waiting for SSM command..."
+          echo "command_id=${COMMAND_ID}" >> "$GITHUB_OUTPUT"
+
+
+      # ----------------------------------------
+      # Wait for SSM Command
+      # ----------------------------------------
+
+      - name: Wait for Database Import
+        run: |
 
           aws ssm wait command-executed \
             --region "${AWS_REGION}" \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID"
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ steps.instance.outputs.instance_id }}"
 
-          echo "========================================"
-          echo "Database deployment completed."
-          echo "========================================"
+
+      # ----------------------------------------
+      # Show SSM Output
+      # ----------------------------------------
+
+      - name: Show Database Import Result
+        run: |
+
+          aws ssm get-command-invocation \
+            --region "${AWS_REGION}" \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ steps.instance.outputs.instance_id }}" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json
+
+
+      # ----------------------------------------
+      # Delete SQL from S3
+      # ----------------------------------------
+
+      - name: Delete SQL Artifact
+        if: always()
+        run: |
+
+          aws s3 rm \
+            "s3://${{ steps.bucket.outputs.bucket }}/database/karfect.sql"

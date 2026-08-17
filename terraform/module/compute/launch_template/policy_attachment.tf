@@ -37,3 +37,12 @@ resource "aws_iam_role_policy_attachment" "secret" {
   policy_arn = aws_iam_policy.secrets_read.arn
 
 }
+
+# s3 read
+
+resource "aws_iam_role_policy_attachment" "db_artifact_read" {
+
+  role = aws_iam_role.ec2_role.name
+
+  policy_arn = aws_iam_policy.db_artifact_read.arn
+}
