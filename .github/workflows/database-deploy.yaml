@@ -142,62 +142,77 @@ jobs:
           INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
         run: |
 
-          echo "Sending database initialization command to EC2..."
+          echo "Building remote script..."
 
-          cat > ssm-commands.json <<EOF
-          {
-            "commands": [
-              "set -e",
+          # --- Part 1: values already known to the runner. -----------------
+          # This heredoc is UNQUOTED on purpose so these three get expanded now.
+          cat > remote-script.sh <<VARS
+          BUCKET="${BUCKET}"
+          AWS_REGION="${AWS_REGION}"
+          DB_NAME="${DB_NAME}"
+          VARS
 
-              "echo '========================================'",
-              "echo 'Installing MySQL client'",
-              "echo '========================================'",
+          # --- Part 2: the actual remote logic. -----------------------------
+          # This heredoc delimiter is QUOTED ('REMOTE'), so bash does NOT expand
+          # $VAR or $(...) here at all. Everything stays literal text and only
+          # runs later, on the EC2 instance, when SSM executes it. This is what
+          # stops secrets from ever being touched/printed on the runner.
+          cat >> remote-script.sh <<'REMOTE'
+          set -e
 
-              "sudo apt-get update -y",
-              "sudo apt-get install -y mysql-client",
+          echo '========================================'
+          echo 'Installing MySQL client'
+          echo '========================================'
 
-              "echo '========================================'",
-              "echo 'Downloading SQL file from S3'",
-              "echo '========================================'",
+          sudo apt-get update -y
+          sudo apt-get install -y mysql-client jq
 
-              "aws s3 cp s3://${BUCKET}/database/karfect.sql /tmp/karfect.sql",
+          echo '========================================'
+          echo 'Downloading SQL file from S3'
+          echo '========================================'
 
-              "echo '========================================'",
-              "echo 'Reading database secret'",
-              "echo '========================================'",
+          aws s3 cp "s3://${BUCKET}/database/karfect.sql" /tmp/karfect.sql
 
-              "SECRET=\\$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region ${AWS_REGION} --query SecretString --output text)",
+          echo '========================================'
+          echo 'Reading database secret'
+          echo '========================================'
 
-              "DB_HOST=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"host\\\"])')",
+          SECRET=$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region "${AWS_REGION}" --query SecretString --output text)
 
-              "DB_USER=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"username\\\"])')",
+          DB_HOST=$(echo "$SECRET" | jq -r '.host')
+          DB_USER=$(echo "$SECRET" | jq -r '.username')
+          DB_PASS=$(echo "$SECRET" | jq -r '.password')
 
-              "DB_PASS=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"password\\\"])')",
+          echo 'Database credentials loaded successfully.'
 
-              "echo 'Database credentials loaded successfully.'",
+          echo '========================================'
+          echo 'Creating database'
+          echo '========================================'
 
-              "echo '========================================'",
-              "echo 'Creating database'",
-              "echo '========================================'",
+          export MYSQL_PWD="$DB_PASS"
+          mysql -h "$DB_HOST" -u "$DB_USER" -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME};"
 
-              "mysql -h \\\"\\$DB_HOST\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" -e \\\"CREATE DATABASE IF NOT EXISTS ${DB_NAME};\\\"",
+          echo '========================================'
+          echo 'Importing database'
+          echo '========================================'
 
-              "echo '========================================'",
-              "echo 'Importing database'",
-              "echo '========================================'",
+          mysql -h "$DB_HOST" -u "$DB_USER" "${DB_NAME}" < /tmp/karfect.sql
+          unset MYSQL_PWD
 
-              "mysql -h \\\"\\$DB_HOST\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" \\\"${DB_NAME}\\\" < /tmp/karfect.sql",
+          echo '========================================'
+          echo 'Database import completed successfully'
+          echo '========================================'
 
-              "echo '========================================'",
-              "echo 'Database import completed successfully'",
-              "echo '========================================'",
+          rm -f /tmp/karfect.sql
 
-              "rm -f /tmp/karfect.sql",
+          echo 'Temporary SQL file deleted.'
+          REMOTE
 
-              "echo 'Temporary SQL file deleted.'"
-            ]
-          }
-          EOF
+          echo "Remote script built."
+
+          # jq turns each line into a correctly-escaped JSON string automatically -
+          # no hand-written backslashes, so this class of bug can't happen again.
+          jq -Rsc '{"commands": (split("\n") | map(select(length > 0)))}' remote-script.sh > ssm-commands.json
 
           echo "SSM command payload created."
 
