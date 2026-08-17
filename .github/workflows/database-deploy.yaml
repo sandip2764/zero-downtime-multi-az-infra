@@ -239,12 +239,42 @@ jobs:
 
           echo "Waiting for database initialization..."
 
-          aws ssm wait command-executed \
-            --region "${AWS_REGION}" \
-            --command-id "${{ steps.ssm.outputs.command_id }}" \
-            --instance-id "${{ steps.instance.outputs.instance_id }}"
+          # aws ssm wait command-executed gives up after ~100s (5s delay x 20
+          # attempts, hardcoded, no CLI flag to extend it). apt-get + the SQL
+          # import routinely take longer than that, so we poll ourselves with
+          # a much bigger ceiling instead of relying on the built-in waiter.
 
-          echo "SSM command finished."
+          COMMAND_ID="${{ steps.ssm.outputs.command_id }}"
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+
+          MAX_ATTEMPTS=120   # 120 * 15s = 30 minutes ceiling - raise if your SQL file is huge
+          DELAY=15
+
+          for ((i=1; i<=MAX_ATTEMPTS; i++)); do
+
+            STATUS=$(aws ssm get-command-invocation \
+              --region "${AWS_REGION}" \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            echo "Attempt ${i}/${MAX_ATTEMPTS} - status: ${STATUS}"
+
+            case "${STATUS}" in
+              Success|Failed|Cancelled|TimedOut|Cancelling)
+                echo "SSM command reached terminal status: ${STATUS}"
+                exit 0
+                ;;
+              *)
+                sleep "${DELAY}"
+                ;;
+            esac
+
+          done
+
+          echo "ERROR: Timed out after $((MAX_ATTEMPTS * DELAY)) seconds waiting for SSM command to finish."
+          exit 1
 
 
       # ========================================
