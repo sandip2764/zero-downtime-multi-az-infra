@@ -166,7 +166,7 @@ module "db_security_group" {
   vpc_id = module.networking.vpc_id
 
   ingress_source_ip = "10.0.0.0/16"
-  allowed_ports     = var.allowed_ports
+  allowed_ports     = var.rds_allowed_ports
 
 }
 

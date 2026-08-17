@@ -62,6 +62,12 @@ variable "allowed_ports" {
   }
 }
 
+variable "rds_allowed_ports" {
+  default = {
+    mysql = 3306
+  }
+}
+
 # launch template
 
 variable "name_prefix" {
