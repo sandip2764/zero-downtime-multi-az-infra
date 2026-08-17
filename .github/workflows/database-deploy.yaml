@@ -59,7 +59,7 @@ jobs:
 
 
       # ========================================
-      # 5. Get S3 Bucket Name from Terraform State
+      # 5. Get S3 Bucket Name
       # ========================================
 
       - name: Get DB Artifact Bucket
@@ -69,7 +69,7 @@ jobs:
           BUCKET=$(terraform output -raw db_artifact_bucket)
 
           if [ -z "$BUCKET" ]; then
-            echo "ERROR: Terraform output db_artifact_bucket_name is empty."
+            echo "ERROR: Terraform output db_artifact_bucket is empty."
             exit 1
           fi
 
@@ -122,8 +122,8 @@ jobs:
           echo "Found instance: ${INSTANCE_ID}"
 
           if [ "${INSTANCE_ID}" = "None" ] || [ -z "${INSTANCE_ID}" ]; then
-            echo "ERROR: No running EC2 instance found with:"
-            echo "Role=karfect-app"
+            echo "ERROR: No running EC2 instance found."
+            echo "Expected tag: Role=karfect-app"
             exit 1
           fi
 
@@ -131,24 +131,22 @@ jobs:
 
 
       # ========================================
-      # 8. Create SSM Command JSON
+      # 8. Send Database Initialization Command
       # ========================================
 
-      - name: Create SSM Command
+      - name: Send Database Initialization Command
         id: ssm
         working-directory: ${{ github.workspace }}
+        env:
+          BUCKET: ${{ steps.bucket.outputs.bucket }}
+          INSTANCE_ID: ${{ steps.instance.outputs.instance_id }}
         run: |
 
-          BUCKET="${{ steps.bucket.outputs.bucket }}"
-          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+          echo "Sending database initialization command to EC2..."
 
-          python3 - <<PY
-          import json
-
-          bucket = "${BUCKET}"
-          db_name = "${DB_NAME}"
-
-          commands = [
+          cat > ssm-commands.json <<EOF
+          {
+            "commands": [
               "set -e",
 
               "echo '========================================'",
@@ -162,19 +160,19 @@ jobs:
               "echo 'Downloading SQL file from S3'",
               "echo '========================================'",
 
-              f"aws s3 cp s3://{bucket}/database/karfect.sql /tmp/karfect.sql",
+              "aws s3 cp s3://${BUCKET}/database/karfect.sql /tmp/karfect.sql",
 
               "echo '========================================'",
               "echo 'Reading database secret'",
               "echo '========================================'",
 
-              "SECRET=$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region us-east-1 --query SecretString --output text)",
+              "SECRET=\\$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region ${AWS_REGION} --query SecretString --output text)",
 
-              "DB_HOST=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['host'])\")",
+              "DB_HOST=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"host\\\"])')",
 
-              "DB_USER=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['username'])\")",
+              "DB_USER=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"username\\\"])')",
 
-              "DB_PASS=$(echo \"$SECRET\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['password'])\")",
+              "DB_PASS=\\$(echo \\\"\\$SECRET\\\" | python3 -c 'import sys,json; print(json.load(sys.stdin)[\\\"password\\\"])')",
 
               "echo 'Database credentials loaded successfully.'",
 
@@ -182,13 +180,13 @@ jobs:
               "echo 'Creating database'",
               "echo '========================================'",
 
-              f"mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" -e \"CREATE DATABASE IF NOT EXISTS {db_name};\"",
+              "mysql -h \\\"\\$DB_HOST\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" -e \\\"CREATE DATABASE IF NOT EXISTS ${DB_NAME};\\\"",
 
               "echo '========================================'",
-              "echo 'Importing SQL database'",
+              "echo 'Importing database'",
               "echo '========================================'",
 
-              f"mysql -h \"$DB_HOST\" -u \"$DB_USER\" -p\"$DB_PASS\" {db_name} < /tmp/karfect.sql",
+              "mysql -h \\\"\\$DB_HOST\\\" -u \\\"\\$DB_USER\\\" -p\\\"\\$DB_PASS\\\" \\\"${DB_NAME}\\\" < /tmp/karfect.sql",
 
               "echo '========================================'",
               "echo 'Database import completed successfully'",
@@ -197,19 +195,17 @@ jobs:
               "rm -f /tmp/karfect.sql",
 
               "echo 'Temporary SQL file deleted.'"
-          ]
+            ]
+          }
+          EOF
 
-          with open("/tmp/ssm-commands.json", "w") as f:
-              json.dump({"commands": commands}, f)
-
-          print("SSM command payload created.")
-
+          echo "SSM command payload created."
 
           COMMAND_ID=$(aws ssm send-command \
             --region "${AWS_REGION}" \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --parameters file:///tmp/ssm-commands.json \
+            --parameters file://ssm-commands.json \
             --query 'Command.CommandId' \
             --output text)
 
@@ -255,7 +251,7 @@ jobs:
 
           echo ""
           echo "========== COMMAND OUTPUT =========="
-          
+
           aws ssm get-command-invocation \
             --region "${AWS_REGION}" \
             --command-id "${{ steps.ssm.outputs.command_id }}" \
