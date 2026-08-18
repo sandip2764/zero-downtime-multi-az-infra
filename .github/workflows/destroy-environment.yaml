@@ -22,14 +22,13 @@ jobs:
 
       - name: Confirm Destruction
         run: |
-
-         " if [ "${{ github.event.inputs.confirm }}" != "DESTROY" ]; then
-            echo "ERROR: Destruction not confirmed.
+            if [ "${{ github.event.inputs.confirm }}" != "DESTROY" ]; then
+            echo "ERROR: Destruction not confirmed."
             echo "Please type DESTROY exactly."
             exit 1
-          fi
+            fi
 
-          echo "Destruction confirmed."
+            echo "Destruction confirmed."
 
 
       # ========================================
