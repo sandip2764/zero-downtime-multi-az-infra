@@ -13,8 +13,8 @@ define('AWS_REGION', 'us-east-1');
 define('AWS_SECRET_NAME', 'db_secret_manager');
 
 // Optional AWS Credentials (leave empty if using IAM Roles on EC2/ECS/EKS/Lambda)
-define('AWS_ACCESS_KEY_ID', '');
-define('AWS_SECRET_ACCESS_KEY', '');
+// define('AWS_ACCESS_KEY_ID', '');
+// define('AWS_SECRET_ACCESS_KEY', '');
 
 // Fallback / Local Database Credentials (used when USE_AWS_SECRETS is false or AWS fetch fails)
 define('DB_HOST', 'localhost');

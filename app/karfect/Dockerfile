@@ -1,5 +1,10 @@
 FROM php:8.2-apache
 
+# System packages - unzip is required for composer to extract downloaded packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install PHP extensions
 RUN docker-php-ext-install pdo pdo_mysql mysqli
 
