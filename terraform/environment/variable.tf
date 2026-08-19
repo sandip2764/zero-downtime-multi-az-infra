@@ -138,5 +138,5 @@ variable "email_endpoint" {
 variable "docker_image_tag" {
   type        = string
   description = "Docker image tag to deploy"
-  default = "latest"
+  default     = "latest"
 }

@@ -4,6 +4,8 @@ resource "aws_s3_bucket" "db_artifacts" {
   tags = {
     Name = "${var.project_name}-db-artifacts"
   }
+
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_public_access_block" "db_artifacts" {
