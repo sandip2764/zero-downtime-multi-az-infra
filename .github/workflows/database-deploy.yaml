@@ -177,7 +177,7 @@ jobs:
           echo 'Reading database secret'
           echo '========================================'
 
-          SECRET=$(aws secretsmanager get-secret-value --secret-id db_secret_manager --region "${AWS_REGION}" --query SecretString --output text)
+          SECRET=$(aws secretsmanager get-secret-value --secret-id database_secret_manager --region "${AWS_REGION}" --query SecretString --output text)
 
           DB_HOST=$(echo "$SECRET" | jq -r '.host')
           DB_USER=$(echo "$SECRET" | jq -r '.username')

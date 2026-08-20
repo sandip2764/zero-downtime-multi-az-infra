@@ -10,7 +10,7 @@ define('BASE_PATH', DOMAIN . '/');
 // Set USE_AWS_SECRETS to true to fetch DB credentials dynamically from AWS Secrets Manager
 define('USE_AWS_SECRETS', true);
 define('AWS_REGION', 'us-east-1');
-define('AWS_SECRET_NAME', 'db_secret_manager');
+define('AWS_SECRET_NAME', 'database_secret_manager');
 
 // Optional AWS Credentials (leave empty if using IAM Roles on EC2/ECS/EKS/Lambda)
 // define('AWS_ACCESS_KEY_ID', '');
