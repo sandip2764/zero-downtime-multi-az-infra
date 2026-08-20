@@ -196,11 +196,16 @@ module "rds" {
   skip_final_snapshot = var.skip_final_snapshot
 }
 
-# secret manager for db instance 
+# create random id
+
+resource "random_id" "secret_suffix" {
+  byte_length = 4
+}
+
+# create aws secret manager for db
 
 resource "aws_secretsmanager_secret" "db" {
-  name = "db_secret_manager"
-
+  name                    = "db_secret_manager-${random_id.secret_suffix.hex}"
   recovery_window_in_days = 0
 }
 
